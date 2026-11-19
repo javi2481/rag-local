@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 import config
 
@@ -32,13 +32,37 @@ def cargar_documentos():
 
 
 def partir_en_chunks(documentos):
-    """Parte los documentos en fragmentos de ~500 tokens con 50 de solapamiento."""
+    """Parte los documentos en fragmentos de ~500 tokens con 50 de solapamiento.
+
+    1. Separa cada documento por sus títulos de markdown (#, ##, ###).
+    2. Parte cada sección en fragmentos de ~500 tokens.
+    3. Agrega al inicio de cada fragmento la ruta de títulos de su sección,
+       por ejemplo "II. Visión general de RAG > A. RAG Ingenuo (Naive RAG)".
+       Así un fragmento del medio de una sección no pierde de qué habla,
+       y el buscador lo puede relacionar con la pregunta.
+    """
+    niveles = [("#", "h1"), ("##", "h2"), ("###", "h3")]
+    separador_titulos = MarkdownHeaderTextSplitter(headers_to_split_on=niveles, strip_headers=True)
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         encoding_name="cl100k_base",  # cuenta tokens igual que los modelos de OpenAI
         chunk_size=config.TAMANO_CHUNK,
         chunk_overlap=config.SOLAPAMIENTO,
     )
-    return splitter.split_documents(documentos)
+
+    chunks = []
+    for documento in documentos:
+        secciones = separador_titulos.split_text(documento.page_content)
+        for seccion in secciones:
+            # h1 es el título del archivo; usamos h2 y h3 para la ruta de la sección
+            titulos = [seccion.metadata[n] for _, n in niveles[1:] if n in seccion.metadata]
+            ruta = " > ".join(titulos)
+            for trozo in splitter.split_text(seccion.page_content):
+                texto = f"Sección: {ruta}\n\n{trozo}" if ruta else trozo
+                chunks.append(Document(
+                    page_content=texto,
+                    metadata={"source": documento.metadata["source"], "seccion": ruta},
+                ))
+    return chunks
 
 
 def obtener_vectorstore():
