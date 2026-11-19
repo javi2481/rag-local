@@ -53,15 +53,18 @@ def partir_en_chunks(documentos):
     for documento in documentos:
         secciones = separador_titulos.split_text(documento.page_content)
         for seccion in secciones:
-            # h1 es el título del archivo; usamos h2 y h3 para la ruta de la sección
-            titulos = [seccion.metadata[n] for _, n in niveles[1:] if n in seccion.metadata]
+            # Armamos la ruta con los títulos ## y ### (el # es el título del archivo)
+            titulos = []
+            if "h2" in seccion.metadata:
+                titulos.append(seccion.metadata["h2"])
+            if "h3" in seccion.metadata:
+                titulos.append(seccion.metadata["h3"])
             ruta = " > ".join(titulos)
+
             for trozo in splitter.split_text(seccion.page_content):
-                texto = f"Sección: {ruta}\n\n{trozo}" if ruta else trozo
-                chunks.append(Document(
-                    page_content=texto,
-                    metadata={"source": documento.metadata["source"], "seccion": ruta},
-                ))
+                texto = f"Sección: {ruta}\n\n{trozo}"
+                metadatos = {"source": documento.metadata["source"], "seccion": ruta}
+                chunks.append(Document(page_content=texto, metadata=metadatos))
     return chunks
 
 

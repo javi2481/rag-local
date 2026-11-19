@@ -12,4 +12,3 @@ MODELO_LLM = "gpt-4o-mini"
 TAMANO_CHUNK = 500      # tokens por fragmento
 SOLAPAMIENTO = 50       # tokens que se repiten entre fragmentos vecinos
 TOP_K = 4               # fragmentos que trae cada búsqueda (pregunta original y cada subpregunta)
-NUM_SUBPREGUNTAS = 3    # hasta cuántas subpreguntas genera el multi-query

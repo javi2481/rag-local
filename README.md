@@ -189,20 +189,18 @@ sequenceDiagram
     C-->>R: Visión general · Introducción · RAG Modular ×2
     R->>L: CONTEXTO + PREGUNTA → hasta 3 subpreguntas
     L-->>R: ¿Qué es el RAG Ingenuo…? · ¿…el RAG Avanzado…? · ¿…el RAG Modular…?
-    par una búsqueda por subpregunta
-        R->>C: buscar(subpregunta 1) · top 4
-        R->>C: buscar(subpregunta 2) · top 4
-        R->>C: buscar(subpregunta 3) · top 4
+    loop una búsqueda por subpregunta
+        R->>C: buscar(subpregunta) · top 4
     end
     C-->>R: + RAG Ingenuo · RAG Avanzado · …
-    R->>R: unir sin repetidos → 10 fragmentos
+    R->>R: agregar solo los nuevos → ≈ 10 fragmentos
     R->>L: prompt de veracidad + 10 fragmentos
     L-->>U: RespuestaRAG(respuesta, fuentes)
 ```
 
 **Por qué en dos pasos y no en uno.** La primera versión del multi-query le pedía las subpreguntas al LLM directamente. Salían genéricas, como *"¿qué caracteriza al primer paradigma?"*: el modelo todavía no había leído el documento y no nombraba los paradigmas. Ahora primero se busca con la pregunta original y esos fragmentos se le pasan al LLM, con la instrucción de usar **los nombres exactos que aparecen en el contexto**. Como el resumen dice "RAG Ingenuo, RAG Avanzado y RAG Modular", las subpreguntas salen con esos nombres.
 
-Las búsquedas de las subpreguntas corren **en paralelo** (`retriever.abatch`), y los fragmentos repetidos se descartan conservando el orden en que aparecieron.
+El LLM devuelve las subpreguntas como texto, una por línea. Después se busca con cada una en un `for`, y solo se agregan los fragmentos que todavía no estaban en la lista.
 
 ## 4. Generación: el prompt como filtro de veracidad
 
@@ -253,7 +251,7 @@ La pregunta trampa es, a propósito, algo que el modelo podría "saber" por su e
 |---|---|---|
 | Respuesta | *"Los tres paradigmas de RAG son: RAG Ingenuo, RAG Avanzado y RAG Modular. El RAG Ingenuo es la etapa inicial, mientras que el RAG Avanzado y el RAG Modular son respuestas a las limitaciones específicas del RAG Ingenuo…"* | **RAG Ingenuo:** la metodología más temprana, con indexado, recuperación y generación; tiene problemas de precisión y genera respuestas irrelevantes. **RAG Avanzado:** mejora la calidad de la recuperación con estrategias previas y posteriores a la recuperación. **RAG Modular:** más adaptable, con módulos especializados que se pueden combinar. |
 | ¿Explica diferencias? | No: solo dice que uno vino después del otro | Sí: una característica concreta de cada uno |
-| Fuentes | `01_introduccion_y_paradigmas_rag.md` | `01_introduccion_y_paradigmas_rag.md` |
+| Fuentes | `01_introduccion_y_paradigmas_rag.md` | `01_introduccion_y_paradigmas_rag.md` y `04_evaluacion_y_futuro.md` (de este cita un fragmento sobre RAG en producción) |
 
 **Prueba 2:** en todas las versiones respondió `"No lo sé"` con `fuentes = []`. El multi-query no la rompió: las subpreguntas (*"¿cuál es el costo por millón de tokens…?"*) traen fragmentos sobre embeddings y benchmarks, y ninguno tiene precios, así que el prompt de veracidad hace su trabajo.
 
@@ -336,7 +334,6 @@ Todos los parámetros están en `config.py`:
 | `MODELO_LLM` | `gpt-4o-mini` | Modelo que genera las subpreguntas y la respuesta |
 | `TAMANO_CHUNK` / `SOLAPAMIENTO` | 500 / 50 tokens | Tamaño de cada fragmento y cuánto se repite con el siguiente |
 | `TOP_K` | 4 | Fragmentos que trae **cada** búsqueda |
-| `NUM_SUBPREGUNTAS` | 3 | Máximo de subpreguntas del multi-query |
 
 ## Estructura del repositorio
 
@@ -348,9 +345,9 @@ Todos los parámetros están en `config.py`:
 │   ├── 03_generacion_y_aumentacion.md
 │   └── 04_evaluacion_y_futuro.md
 ├── 2312.10997v5.pdf                       # el paper original, en inglés
-├── config.py                              # modelos, rutas, chunking, TOP_K y subpreguntas
+├── config.py                              # modelos, rutas, chunking y TOP_K
 ├── ingest.py                              # lee data/, parte por títulos y guarda en ChromaDB
-├── rag.py                                 # multi-query, prompt, cadena LCEL y get_rag_response()
+├── rag.py                                 # búsqueda en dos pasos, prompt, cadena LCEL y get_rag_response()
 ├── main.py                                # las dos pruebas
 ├── requirements.txt
 ├── .env.example                           # plantilla para la API key

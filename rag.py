@@ -2,9 +2,8 @@
 # usando SOLO esa información.
 
 from dotenv import load_dotenv
-from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
@@ -43,7 +42,8 @@ prompt = ChatPromptTemplate.from_messages([
      "Reglas:\n"
      "1. Responde SOLO con la información del CONTEXTO. No uses tu conocimiento propio.\n"
      "2. Si la respuesta no está en el CONTEXTO, responde exactamente: \"No lo sé\" y deja la lista de fuentes vacía.\n"
-     "3. Responde siempre en español.\n\n"
+     "3. En las fuentes, escribe cada archivo una sola vez.\n"
+     "4. Responde siempre en español.\n\n"
      "{format_instructions}"),
     ("human", "CONTEXTO:\n{contexto}\n\nPREGUNTA: {pregunta}"),
 ]).partial(format_instructions=parser.get_format_instructions())
@@ -59,63 +59,54 @@ llm = ChatOpenAI(model=config.MODELO_LLM, temperature=0)
 #    Paso 1: buscamos con la pregunta original. Esos fragmentos suelen nombrar las partes
 #            (por ejemplo, "RAG Ingenuo, RAG Avanzado y RAG Modular").
 #    Paso 2: con ese contexto, el LLM escribe una subpregunta por cada parte y buscamos con cada una.
-class Subpreguntas(BaseModel):
-    subpreguntas: list[str] = Field(description="Subpreguntas cortas y autónomas")
-
-
 prompt_subpreguntas = ChatPromptTemplate.from_messages([
     ("system",
      "Descompones preguntas para un buscador semántico.\n"
-     "Escribe hasta {n} subpreguntas cortas, en español, que juntas cubran la PREGUNTA. "
+     "Escribe hasta 3 subpreguntas cortas, en español, que juntas cubran la PREGUNTA. "
      "Si la pregunta compara o enumera varias cosas, escribe una subpregunta por cada una "
      "y nómbrala con el nombre exacto que usa el CONTEXTO. "
      "Si la pregunta ya es simple, devuelve solo una. "
-     "Las subpreguntas solo se usan para buscar: no las respondas."),
+     "Las subpreguntas solo se usan para buscar: no las respondas.\n"
+     "Escribe una subpregunta por línea, sin números ni viñetas."),
     ("human", "CONTEXTO:\n{contexto}\n\nPREGUNTA: {pregunta}"),
-]).partial(n=config.NUM_SUBPREGUNTAS)
+])
 
-generar_subpreguntas = prompt_subpreguntas | llm.with_structured_output(Subpreguntas)
-
-
-async def recuperar_multiconsulta(pregunta: str):
-    """Busca con la pregunta original y con subpreguntas generadas a partir de esos resultados.
-
-    Devuelve los fragmentos de todas las búsquedas, sin repetir y en orden de aparición.
-    """
-    iniciales = await retriever.ainvoke(pregunta)
-    resultado = await generar_subpreguntas.ainvoke(
-        {"pregunta": pregunta, "contexto": formatear_documentos(iniciales)}
-    )
-    subpreguntas = resultado.subpreguntas[: config.NUM_SUBPREGUNTAS]
-    listas = [iniciales] + await retriever.abatch(subpreguntas)  # búsquedas en paralelo
-
-    vistos, documentos = set(), []
-    for lista in listas:
-        for doc in lista:
-            if doc.page_content not in vistos:
-                vistos.add(doc.page_content)
-                documentos.append(doc)
-    return documentos
+cadena_subpreguntas = prompt_subpreguntas | llm | StrOutputParser()
 
 
-# 6. Cadena LCEL: pregunta -> multi-query -> prompt -> LLM -> parser
-cadena_rag = (
-    {
-        "contexto": RunnableLambda(recuperar_multiconsulta) | formatear_documentos,
-        "pregunta": RunnablePassthrough(),
-    }
-    | prompt
-    | llm
-    | parser
-)
+async def buscar_fragmentos(pregunta):
+    """Busca con la pregunta original y con las subpreguntas. Devuelve los fragmentos sin repetir."""
+    # Paso 1: buscar con la pregunta original
+    fragmentos = await retriever.ainvoke(pregunta)
+
+    # Paso 2: pedirle al LLM las subpreguntas (vienen una por línea)
+    texto = await cadena_subpreguntas.ainvoke({
+        "pregunta": pregunta,
+        "contexto": formatear_documentos(fragmentos),
+    })
+    subpreguntas = [linea.strip() for linea in texto.splitlines() if linea.strip()]
+
+    # Paso 3: buscar con cada subpregunta y agregar solo los fragmentos nuevos
+    for subpregunta in subpreguntas[:3]:
+        for doc in await retriever.ainvoke(subpregunta):
+            if doc not in fragmentos:
+                fragmentos.append(doc)
+
+    return fragmentos
+
+
+# 6. Cadena LCEL que genera la respuesta: prompt -> LLM -> parser
+cadena_respuesta = prompt | llm | parser
 
 
 async def get_rag_response(query: str) -> RespuestaRAG:
     """Responde una pregunta de forma asíncrona.
 
-    a. Busca en ChromaDB con la pregunta y con subpreguntas generadas a partir de esos resultados (multi-query).
-    b. Arma el prompt con esos fragmentos.
-    c. Llama al LLM de forma asíncrona (ainvoke).
-    d. Convierte la respuesta al modelo Pydantic RespuestaRAG.
+    a. Busca los fragmentos en ChromaDB (pregunta original + subpreguntas).
+    b. Los une en un solo texto: el CONTEXTO.
+    c. Llama a la cadena (prompt -> LLM -> parser) de forma asíncrona.
+    d. Devuelve la respuesta como modelo Pydantic RespuestaRAG.
     """
-    return await cadena_rag.ainvoke(query)
+    fragmentos = await buscar_fragmentos(query)
+    contexto = formatear_documentos(fragmentos)
+    return await cadena_respuesta.ainvoke({"contexto": contexto, "pregunta": query})
